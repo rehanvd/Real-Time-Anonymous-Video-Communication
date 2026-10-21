@@ -94,6 +94,20 @@ npm run dev
 
 Open **http://localhost:8080** in your browser.
 
+### Testing on other devices (same Wi-Fi)
+
+Browsers only allow camera/mic access on `https://` (or `localhost`), so use the HTTPS dev server:
+
+```bash
+npm run dev:lan
+```
+
+Open **https://&lt;your-PC-IP&gt;:8443** on the other device and accept the self-signed certificate warning. On Windows, allow inbound TCP port 8443 through the firewall (run in an Administrator PowerShell):
+
+```powershell
+New-NetFirewallRule -DisplayName "Vite LAN 8443" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -Profile Private
+```
+
 ---
 
 ## Backend Setup
