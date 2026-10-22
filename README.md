@@ -84,7 +84,7 @@ VITE_MATCHING_WS_URL=ws://localhost:8000
 VITE_SIGNALLING_WS_URL=ws://localhost:8001
 ```
 
-> **Note:** If you skip this step, the app falls back to `localhost:8000` / `localhost:8001` automatically.
+> **Note:** If you skip this step, the app uses the hosted services on Render (`matching-service-iyxv.onrender.com` / `signalling-service.onrender.com`). Those are **shared with other users**, so you may be matched with a stranger instead of your own second device. For reliable testing between your own devices, run your own backend (see Backend Setup) and point `.env` at it.
 
 ### 3. Start the dev server
 
@@ -112,10 +112,11 @@ New-NetFirewallRule -DisplayName "Vite LAN 8443" -Direction Inbound -Protocol TC
 
 ## Backend Setup
 
-This frontend requires two backend microservices from the `random-video-chat` repo. The fastest way is Docker:
+This frontend requires two backend microservices from the [RandomVideoChat](https://github.com/aryan9867bar/RandomVideoChat) repo. The fastest way is Docker:
 
 ```bash
-# In the random-video-chat/ directory
+git clone https://github.com/aryan9867bar/RandomVideoChat.git
+cd RandomVideoChat
 docker compose up --build
 ```
 

@@ -5,6 +5,14 @@ import WelcomeScreen from "@/components/WelcomeScreen";
 import ChatRoom from "@/components/ChatRoom";
 import { useToast } from "@/hooks/use-toast";
 
+// Backend endpoints (override in .env, see README); default to the hosted services
+const MATCHING_SERVICE_URL =
+  import.meta.env.VITE_MATCHING_SERVICE_URL || "https://matching-service-iyxv.onrender.com";
+const MATCHING_WS_URL =
+  import.meta.env.VITE_MATCHING_WS_URL || "wss://matching-service-iyxv.onrender.com";
+const SIGNALLING_WS_URL =
+  import.meta.env.VITE_SIGNALLING_WS_URL || "wss://signalling-service.onrender.com";
+
 const Index = () => {
   const [name, setName] = useState("");
   const [registered, setRegistered] = useState(false);
@@ -31,8 +39,47 @@ const Index = () => {
   const peerNameRef = useRef<string>("");
   const pendingSignalsRef = useRef<any[]>([]);
   const isVerifiedRef = useRef<boolean>(false);
+  const readyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const matchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { toast } = useToast();
+
+  // Stop the responder's "ready" pings
+  const stopReadyPings = useCallback(() => {
+    if (readyTimerRef.current) {
+      clearInterval(readyTimerRef.current);
+      readyTimerRef.current = null;
+    }
+  }, []);
+
+  // Responder repeatedly tells the initiator it is listening on the signalling server.
+  // The server drops signals sent to a peer that hasn't connected yet (e.g. while
+  // the other person is still on the camera permission prompt), so the initiator
+  // only creates its offer once a "ready" ping gets through.
+  const startReadyPings = useCallback(() => {
+    stopReadyPings();
+    const ping = () => {
+      const ws = signalWsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(
+        JSON.stringify({
+          event: "signal",
+          room_code: roomCodeRef.current,
+          target: peerNameRef.current,
+          data: { type: "ready" },
+        })
+      );
+    };
+    ping();
+    readyTimerRef.current = setInterval(ping, 1000);
+  }, [stopReadyPings]);
+
+  const clearMatchTimeout = useCallback(() => {
+    if (matchTimeoutRef.current) {
+      clearTimeout(matchTimeoutRef.current);
+      matchTimeoutRef.current = null;
+    }
+  }, []);
 
   // Helper to send signal - queues if WS not ready
   const sendSignal = useCallback(
@@ -131,6 +178,9 @@ const Index = () => {
   const cleanupPeerConnection = useCallback(() => {
     console.log("[cleanup] Cleaning up peer connection");
 
+    stopReadyPings();
+    clearMatchTimeout();
+
     if (peerRef.current) {
       try {
         peerRef.current.destroy();
@@ -172,7 +222,7 @@ const Index = () => {
     peerNameRef.current = "";
     pendingSignalsRef.current = [];
     isVerifiedRef.current = false;
-  }, []);
+  }, [stopReadyPings, clearMatchTimeout]);
 
   // Find next match
   const findNextMatch = useCallback(async () => {
@@ -182,7 +232,7 @@ const Index = () => {
     toast({ title: "Searching", description: "Looking for a new match..." });
 
     try {
-      const resp = await fetch("https://matching-service-iyxv.onrender.com/registerForMatching", {
+      const resp = await fetch(`${MATCHING_SERVICE_URL}/registerForMatching`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -204,6 +254,12 @@ const Index = () => {
       });
     }
   }, [cleanupPeerConnection, name, toast]);
+
+  // Latest findNextMatch for websocket callbacks created before `name` was set
+  const findNextMatchRef = useRef(findNextMatch);
+  useEffect(() => {
+    findNextMatchRef.current = findNextMatch;
+  }, [findNextMatch]);
 
   // Create peer connection for initiator
   const createInitiatorPeer = useCallback(
@@ -270,6 +326,7 @@ const Index = () => {
 
       peerObj.on("connect", () => {
         console.log("[peer] Connected!");
+        clearMatchTimeout();
         setStatus("connected");
         toast({
           title: "Connected!",
@@ -302,7 +359,7 @@ const Index = () => {
 
       peerRef.current = peerObj;
     },
-    [cleanupPeerConnection, toast, sendSignal, name]
+    [cleanupPeerConnection, clearMatchTimeout, toast, sendSignal, name]
   );
 
   // Add this function in your component
@@ -409,6 +466,7 @@ const Index = () => {
 
       peerObj.on("connect", () => {
         console.log("[peer] Connected!");
+        clearMatchTimeout();
         setStatus("connected");
         toast({
           title: "Connected!",
@@ -452,7 +510,7 @@ const Index = () => {
         });
       }
     },
-    [cleanupPeerConnection, toast, sendSignal, name]
+    [cleanupPeerConnection, clearMatchTimeout, toast, sendSignal, name]
   );
 
   // Handle signaling messages - this will be called from websocket onmessage
@@ -469,9 +527,28 @@ const Index = () => {
         isVerifiedRef.current = true;
         // toast({ title: "✓ Verified", description: "Room verified, flushing pending signals..." });
         flushPendingSignals();
+        if (initiatorFlagRef.current === false) startReadyPings();
+      }
+
+      if (msg.event === "signal" && msg.data?.type === "ready") {
+        // Responder is listening: now it's safe for the initiator to send its offer
+        if (
+          initiatorFlagRef.current === true &&
+          !peerRef.current &&
+          localStreamRef.current
+        ) {
+          console.log("[sigws] Responder ready, creating initiator peer");
+          createInitiatorPeer(
+            localStreamRef.current,
+            roomCodeRef.current,
+            peerNameRef.current
+          );
+        }
+        return;
       }
 
       if (msg.event === "signal") {
+        stopReadyPings();
         console.log(
           "[sigws] signal received, peerRef:",
           !!peerRef.current,
@@ -525,6 +602,10 @@ const Index = () => {
       }
 
       if (msg.event === "error") {
+        // Expected while the responder pings before the initiator has connected
+        if (msg.message === "Peer not connected" && readyTimerRef.current) {
+          return;
+        }
         console.error("Signaling error:", msg.message || msg);
         // toast({ title: "❌ Signaling error", description: msg.message || "Unknown error", variant: "destructive" });
         setStatus("error: " + (msg.message || "unknown"));
@@ -540,7 +621,15 @@ const Index = () => {
         cleanupPeerConnection();
       }
     },
-    [cleanupPeerConnection, toast, createResponderPeer, flushPendingSignals]
+    [
+      cleanupPeerConnection,
+      toast,
+      createResponderPeer,
+      createInitiatorPeer,
+      flushPendingSignals,
+      startReadyPings,
+      stopReadyPings,
+    ]
   );
 
   // Store the latest handleSignalMessage in a ref so websocket always uses latest version
@@ -556,7 +645,7 @@ const Index = () => {
       // toast({ title: "🔌 Signaling WS", description: "Connecting to signaling server..." });
       const ws = new WebSocket(
         // `ws://127.0.0.1:8001/ws/${encodeURIComponent(username)}`
-        `wss://signalling-service.onrender.com/ws/${encodeURIComponent(username)}`
+        `${SIGNALLING_WS_URL}/ws/${encodeURIComponent(username)}`
       );
 
       ws.onopen = () => {
@@ -596,7 +685,7 @@ const Index = () => {
       // toast({ title: "🔌 Matching WS", description: "Connecting to matching server..." });
       const ws = new WebSocket(
         // `ws://127.0.0.1:8000/ws/${encodeURIComponent(username)}`
-        `wss://matching-service-iyxv.onrender.com/ws/${encodeURIComponent(username)}`
+        `${MATCHING_WS_URL}/ws/${encodeURIComponent(username)}`
         // for production development wss => `wss://127.0.0.1:8000/ws/${encodeURIComponent(username)}`
       );
 
@@ -624,14 +713,29 @@ const Index = () => {
             setRoomCode(rc);
             roomCodeRef.current = rc;
 
-            const parts = rc.split("_");
-            const peer = parts.find((p: string) => p !== username) || "";
+            // room_code is "<initiator>_<responder>"; names may themselves contain "_"
+            const peer = rc.startsWith(`${username}_`)
+              ? rc.slice(username.length + 1)
+              : rc.slice(0, rc.length - username.length - 1);
             setPeerName(peer);
             peerNameRef.current = peer;
 
             setIsInitiator(initiator);
             initiatorFlagRef.current = initiator;
             setStatus("matched");
+
+            // If the call doesn't come up (e.g. matched with someone who already
+            // left), go back into the queue instead of waiting forever
+            clearMatchTimeout();
+            matchTimeoutRef.current = setTimeout(() => {
+              matchTimeoutRef.current = null;
+              if (!localStreamRef.current) return; // still on / denied camera prompt
+              toast({
+                title: "No response",
+                description: `${peer} didn't connect, finding someone else...`,
+              });
+              findNextMatchRef.current();
+            }, 30000);
 
             // Get media FIRST before joining signaling, to prevent race condition
             const setupAndJoin = async () => {
@@ -697,14 +801,9 @@ const Index = () => {
                     })
                   );
 
-                  // Only initiator creates peer immediately
-                  // Responder waits for signal to arrive
+                  // Initiator creates its peer once the responder's "ready" ping
+                  // arrives; responder creates its peer when the offer arrives
                   console.log("Is Initiator - ", initiator);
-                  if (initiator) {
-                    createInitiatorPeer(localStreamRef.current!, rc, peer);
-                  } else {
-                    // toast({ title: "⏳ Waiting for offer", description: "Responder waiting for initiator signal..." });
-                  }
                 }
               }, 100);
             };
@@ -752,19 +851,37 @@ const Index = () => {
       };
 
       matchWsRef.current = ws;
+      return ws;
     },
-    [openSignalingWS, createInitiatorPeer, toast]
+    [openSignalingWS, clearMatchTimeout, toast]
   );
 
   const register = useCallback(
     async (userName: string) => {
       if (!userName) return;
 
-      openMatchingWS(userName);
+      const ws = openMatchingWS(userName);
       setName(userName);
 
       try {
-        const resp = await fetch("https://matching-service-iyxv.onrender.com/registerForMatching", {
+        // Join the queue only once our socket is open, otherwise the server's
+        // "matched" event can arrive before it knows where to send it and is lost
+        if (ws.readyState !== WebSocket.OPEN) {
+          toast({
+            title: "Connecting...",
+            description: "Waking up the matching server, this can take a moment",
+          });
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error("Matching socket open timed out")),
+              60000 // free-tier backend can take ~50s to wake up
+            );
+            ws.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
+            ws.addEventListener("close", () => { clearTimeout(timer); reject(new Error("Matching socket closed")); }, { once: true });
+          });
+        }
+
+        const resp = await fetch(`${MATCHING_SERVICE_URL}/registerForMatching`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: userName }),
