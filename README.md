@@ -108,6 +108,21 @@ Open **https://&lt;your-PC-IP&gt;:8443** on the other device and accept the self
 New-NetFirewallRule -DisplayName "Vite LAN 8443" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -Profile Private
 ```
 
+### Video not showing? Run the local TURN relay
+
+On phone hotspots and mobile networks, devices often can't connect to each other directly, so the call matches but no video arrives. Run a TURN relay on the machine serving the page:
+
+```bash
+npm run turn
+```
+
+Set `VITE_TURN_URL=local` in `.env`, open the page on every device via `https://<your-PC-IP>:8443`, and allow these inbound ports in the firewall (Administrator PowerShell; use `-Profile Any` if your network is marked Public):
+
+```powershell
+New-NetFirewallRule -DisplayName "TURN 3478" -Direction Inbound -Protocol UDP -LocalPort 3478 -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "TURN relay" -Direction Inbound -Protocol UDP -LocalPort 49160-49200 -Action Allow -Profile Private
+```
+
 ---
 
 ## Backend Setup

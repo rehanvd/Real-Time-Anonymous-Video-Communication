@@ -5,13 +5,50 @@ import WelcomeScreen from "@/components/WelcomeScreen";
 import ChatRoom from "@/components/ChatRoom";
 import { useToast } from "@/hooks/use-toast";
 
+// Relative values (e.g. "/api/matching") go through the dev server's proxy on the current host
+const resolveUrl = (url: string, ws: boolean) =>
+  url.startsWith("/")
+    ? `${ws ? (location.protocol === "https:" ? "wss:" : "ws:") : location.protocol}//${location.host}${url}`
+    : url;
+
 // Backend endpoints (override in .env, see README); default to the hosted services
-const MATCHING_SERVICE_URL =
-  import.meta.env.VITE_MATCHING_SERVICE_URL || "https://matching-service-iyxv.onrender.com";
-const MATCHING_WS_URL =
-  import.meta.env.VITE_MATCHING_WS_URL || "wss://matching-service-iyxv.onrender.com";
-const SIGNALLING_WS_URL =
-  import.meta.env.VITE_SIGNALLING_WS_URL || "wss://signalling-service.onrender.com";
+const MATCHING_SERVICE_URL = resolveUrl(
+  import.meta.env.VITE_MATCHING_SERVICE_URL || "https://matching-service-iyxv.onrender.com",
+  false
+);
+const MATCHING_WS_URL = resolveUrl(
+  import.meta.env.VITE_MATCHING_WS_URL || "wss://matching-service-iyxv.onrender.com",
+  true
+);
+const SIGNALLING_WS_URL = resolveUrl(
+  import.meta.env.VITE_SIGNALLING_WS_URL || "wss://signalling-service.onrender.com",
+  true
+);
+
+// TURN relay for when a direct connection isn't possible (hotspots, mobile NAT).
+// VITE_TURN_URL: a hosted TURN server, or "local" for scripts/turn-server.mjs on
+// the machine serving this page (opened via its LAN IP, or via localhost on it)
+const turnHost = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)
+  ? __LAN_IP__
+  : location.hostname;
+const TURN_URL =
+  import.meta.env.VITE_TURN_URL === "local"
+    ? `turn:${turnHost}:3478`
+    : import.meta.env.VITE_TURN_URL;
+
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  ...(TURN_URL
+    ? [
+        {
+          urls: TURN_URL,
+          username: import.meta.env.VITE_TURN_USERNAME || "rtavc",
+          credential: import.meta.env.VITE_TURN_CREDENTIAL || "rtavc-local",
+        },
+      ]
+    : []),
+];
 
 const Index = () => {
   const [name, setName] = useState("");
@@ -271,30 +308,7 @@ const Index = () => {
         initiator: true,
         trickle: true,
         stream,
-        config: {
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:stun1.l.google.com:19302" },
-            { urls: "stun:stun2.l.google.com:19302" },
-            { urls: "stun:stun3.l.google.com:19302" },
-            { urls: "stun:stun4.l.google.com:19302" },
-            {
-              urls: "turn:openrelay.metered.ca:80",
-              username: "openrelayproject",
-              credential: "openrelayproject",
-            },
-            {
-              urls: "turn:openrelay.metered.ca:443",
-              username: "openrelayproject",
-              credential: "openrelayproject",
-            },
-            {
-              urls: "turn:openrelay.metered.ca:443?transport=tcp",
-              username: "openrelayproject",
-              credential: "openrelayproject",
-            },
-          ],
-        },
+        config: { iceServers: ICE_SERVERS },
       });
 
       console.log("Peer Object Created");
@@ -413,30 +427,7 @@ const Index = () => {
         initiator: false,
         trickle: true,
         stream,
-        config: {
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:stun1.l.google.com:19302" },
-            { urls: "stun:stun2.l.google.com:19302" },
-            { urls: "stun:stun3.l.google.com:19302" },
-            { urls: "stun:stun4.l.google.com:19302" },
-            {
-              urls: "turn:openrelay.metered.ca:80",
-              username: "openrelayproject",
-              credential: "openrelayproject",
-            },
-            {
-              urls: "turn:openrelay.metered.ca:443",
-              username: "openrelayproject",
-              credential: "openrelayproject",
-            },
-            {
-              urls: "turn:openrelay.metered.ca:443?transport=tcp",
-              username: "openrelayproject",
-              credential: "openrelayproject",
-            },
-          ],
-        },
+        config: { iceServers: ICE_SERVERS },
       });
 
       peerObj.on("signal", (data) => {
